@@ -11,7 +11,7 @@ import uuid
 import logging
 from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 from gpt_researcher import GPTResearcher
 
 # Load environment variables
@@ -37,9 +37,7 @@ logger = logging.getLogger(__name__)
 
 # Initialize FastMCP server
 mcp = FastMCP(
-    name="GPT Researcher",
-    host="0.0.0.0",   # add this to make it work with docker (not sure why)
-    port=8000,
+    name="GPT Researcher"
 )
 
 # Initialize researchers dictionary
@@ -298,13 +296,9 @@ def run_server():
             logger.info("Using STDIO transport (Claude Desktop compatible)")
             mcp.run(transport="stdio")
         elif transport == "sse":
-            logger.info(f"Using SSE transport on {mcp.host}:{mcp.port}")
-            print(f"   Server available at http://{mcp.host}:{mcp.port}/sse")
-            mcp.run(transport="sse")
+            mcp.run(transport="sse", host="0.0.0.0", port=8000)
         elif transport == "streamable-http":
-            logger.info(f"Using Streamable HTTP transport on {mcp.host}:{mcp.port}")
-            print(f"   Server available at http://{mcp.host}:{mcp.port}/mcp")
-            mcp.run(transport="streamable-http")
+            mcp.run(transport="streamable-http", host="0.0.0.0", port=8000)
         else:
             raise ValueError(f"Unsupported transport: {transport}")
             
