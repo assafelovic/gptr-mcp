@@ -138,7 +138,7 @@ async def deep_research(query: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
-async def quick_search(query: str) -> Dict[str, Any]:
+async def quick_search(query: str, query_domains: list[str] = None, aggregated_summary: bool = False) -> Dict[str, Any]:
     """
     Perform a quick web search on a given query and return search results with snippets.
     This optimizes for speed over quality and is useful when an LLM doesn't need in-depth
@@ -146,6 +146,8 @@ async def quick_search(query: str) -> Dict[str, Any]:
     
     Args:
         query: The search query
+        query_domains: Optional list of domains to restrict search to.
+        aggregated_summary: Whether to return an aggregated summary of the search results.
         
     Returns:
         Dict containing search results and snippets
@@ -160,16 +162,22 @@ async def quick_search(query: str) -> Dict[str, Any]:
     
     try:
         # Perform quick search
-        search_results = await researcher.quick_search(query=query)
+        search_results = await researcher.quick_search(query=query, query_domains=query_domains, aggregated_summary=aggregated_summary)
         mcp.researchers[search_id] = researcher
         logger.info(f"Quick search completed for ID: {search_id}")
         
-        return create_success_response({
+        response = {
             "search_id": search_id,
             "query": query,
-            "result_count": len(search_results) if search_results else 0,
-            "search_results": search_results
-        })
+        }
+
+        if aggregated_summary:
+            response["summary"] = search_results
+        else:
+            response["result_count"] = len(search_results) if search_results else 0
+            response["search_results"] = search_results
+
+        return create_success_response(response)
     except Exception as e:
         return handle_exception(e, "Quick search")
 
