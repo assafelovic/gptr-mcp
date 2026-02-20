@@ -8,6 +8,12 @@ fastapi>=0.103.1
 uvicorn>=0.23.2
 pydantic>=2.3.0
 
+# Scraper (NoDriverScraper imports zendriver)
+zendriver>=0.5
+
+# Additional retrievers (gpt-researcher imports ddgs)
+ddgs>=8.0
+
 # Utility dependencies
 loguru>=0.7.0
 

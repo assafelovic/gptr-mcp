@@ -91,40 +91,62 @@ async def research_resource(topic: str) -> str:
 
 
 @mcp.tool()
-async def deep_research(query: str) -> Dict[str, Any]:
+async def deep_research(
+    query: str,
+    breadth: int = 4,
+    depth: int = 2,
+    concurrency: int = 4,
+) -> Dict[str, Any]:
     """
-    Conduct a web deep research on a given query using GPT Researcher. 
-    Use this tool when you need time-sensitive, real-time information like stock prices, news, people, specific knowledge, etc.
-    
+    Conduct recursive deep web research on a given query using GPT Researcher.
+    Uses multi-level recursive research: generates N search queries per level (breadth),
+    recursively explores follow-up questions (depth). Use this tool when you need
+    thorough, time-sensitive, real-time information like stock prices, news, people,
+    specific knowledge, etc.
+
     Args:
         query: The research query or topic
-        
+        breadth: Number of search queries per research level (default 4)
+        depth: Number of recursive research levels (default 2)
+        concurrency: Max concurrent research tasks (default 4)
+
     Returns:
         Dict containing research status, ID, and the actual research context and sources
         that can be used directly by LLMs for context enrichment
     """
-    logger.info(f"Conducting research on query: {query}...")
-    
+    logger.info(f"Conducting deep research on query: {query} (breadth={breadth}, depth={depth}, concurrency={concurrency})...")
+
+    # Set deep research config via env vars (read by gpt-researcher's config)
+    os.environ["DEEP_RESEARCH_BREADTH"] = str(breadth)
+    os.environ["DEEP_RESEARCH_DEPTH"] = str(depth)
+    os.environ["DEEP_RESEARCH_CONCURRENCY"] = str(concurrency)
+
+    # Use BeautifulSoup scraper for deep research: the nodriver browser pool
+    # cannot handle concurrent sub-researchers (shared class-level state causes deadlocks).
+    # quick_search uses the default (nodriver) since it runs a single researcher.
+    saved_scraper = os.environ.get("SCRAPER")
+    os.environ["SCRAPER"] = "bs"
+
     # Generate a unique ID for this research session
     research_id = str(uuid.uuid4())
-    
-    # Initialize GPT Researcher
-    researcher = GPTResearcher(query)
-    
+
+    # Initialize GPT Researcher in deep mode
+    researcher = GPTResearcher(query, report_type="deep")
+
     # Start research
     try:
         await researcher.conduct_research()
         mcp.researchers[research_id] = researcher
-        logger.info(f"Research completed for ID: {research_id}")
-        
+        logger.info(f"Deep research completed for ID: {research_id}")
+
         # Get the research context and sources
         context = researcher.get_research_context()
         sources = researcher.get_research_sources()
         source_urls = researcher.get_source_urls()
-        
+
         # Store in the research store for the resource API
         store_research_results(query, context, sources, source_urls)
-        
+
         return create_success_response({
             "research_id": research_id,
             "query": query,
@@ -135,6 +157,12 @@ async def deep_research(query: str) -> Dict[str, Any]:
         })
     except Exception as e:
         return handle_exception(e, "Research")
+    finally:
+        # Restore original scraper setting
+        if saved_scraper is not None:
+            os.environ["SCRAPER"] = saved_scraper
+        else:
+            os.environ.pop("SCRAPER", None)
 
 
 @mcp.tool()
