@@ -91,6 +91,7 @@ cd gpt-researcher
 
 2. Install the gptr-mcp dependencies:
 ```bash
+git clone https://github.com/assafelovic/gptr-mcp.git
 cd gptr-mcp
 pip install -r requirements.txt
 ```
