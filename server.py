@@ -45,7 +45,6 @@ mcp = FastMCP(
 if not hasattr(mcp, "researchers"):
     mcp.researchers = {}
 
-
 @mcp.resource("research://{topic}")
 async def research_resource(topic: str) -> str:
     """
@@ -284,10 +283,14 @@ def run_server():
     # Determine transport based on environment
     transport = os.getenv("MCP_TRANSPORT", "stdio").lower()
     
-    # Auto-detect Docker environment
+    # Normalize transport name: "streamable-http" -> "http" (FastMCP uses "http" for streamable HTTP)
+    if transport == "streamable-http":
+        transport = "http"
+    
+    # Auto-detect Docker environment - use http (streamable) instead of deprecated sse
     if os.path.exists("/.dockerenv") or os.getenv("DOCKER_CONTAINER"):
-        transport = "sse"
-        logger.info("Docker environment detected, using SSE transport")
+        transport = "http"
+        logger.info("Docker environment detected, using HTTP (Streamable HTTP) transport")
     
     # Add startup message
     logger.info(f"Starting GPT Researcher MCP Server with {transport} transport...")
@@ -299,17 +302,15 @@ def run_server():
         if transport == "stdio":
             logger.info("Using STDIO transport (Claude Desktop compatible)")
             mcp.run(transport="stdio")
+        elif transport == "http":
+            logger.info("Using HTTP transport (Streamable HTTP protocol)")
+            mcp.run(transport="http", host="0.0.0.0", port=8000)
         elif transport == "sse":
+            logger.info("Using SSE transport (legacy, consider switching to http)")
             mcp.run(transport="sse", host="0.0.0.0", port=8000)
-        elif transport == "streamable-http":
-            mcp.run(transport="streamable-http", host="0.0.0.0", port=8000)
         else:
-            raise ValueError(f"Unsupported transport: {transport}")
+            raise ValueError(f"Unsupported transport: {transport}. Valid options: stdio, http, sse")
             
-        # Note: If we reach here, the server has stopped
-        logger.info("MCP Server is running...")
-        while True:
-            pass  # Keep the process alive
     except Exception as e:
         logger.error(f"Error running MCP server: {str(e)}")
         print(f"❌ MCP Server error: {str(e)}")
