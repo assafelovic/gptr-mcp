@@ -52,7 +52,7 @@ class TestChunkContext:
         chunks = chunk_context(snippets, max_words=1000)
         assert len(chunks) >= 2
         for chunk in chunks:
-            assert chunk["word_count"] <= 1200
+            assert chunk["word_count"] <= 1000
 
     def test_single_snippet_fits(self):
         snippets = ["hello world"]
