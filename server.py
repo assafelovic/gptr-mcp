@@ -178,8 +178,15 @@ async def deep_research(
             })
 
         # Generate report with preset
-        custom_prompt = apply_preset(output_type)
-        report = await researcher.write_report(custom_prompt=custom_prompt or "")
+        saved_total_words = os.environ.get("TOTAL_WORDS")
+        try:
+            custom_prompt = apply_preset(output_type)
+            report = await researcher.write_report(custom_prompt=custom_prompt if custom_prompt else "")
+        finally:
+            if saved_total_words is not None:
+                os.environ["TOTAL_WORDS"] = saved_total_words
+            else:
+                os.environ.pop("TOTAL_WORDS", None)
 
         # Compact types: return full report inline
         if not is_paginated_type(output_type):
@@ -307,12 +314,20 @@ async def write_report(
 
     try:
         # custom_prompt overrides preset
-        if custom_prompt:
-            prompt = custom_prompt
-        else:
-            prompt = apply_preset(output_type)
+        saved_total_words = os.environ.get("TOTAL_WORDS")
+        try:
+            if custom_prompt:
+                prompt = custom_prompt
+            else:
+                prompt = apply_preset(output_type)
 
-        report = await researcher.write_report(custom_prompt=prompt or "")
+            report = await researcher.write_report(custom_prompt=prompt if prompt else "")
+        finally:
+            if saved_total_words is not None:
+                os.environ["TOTAL_WORDS"] = saved_total_words
+            else:
+                os.environ.pop("TOTAL_WORDS", None)
+
         sources = researcher.get_research_sources()
         costs = researcher.get_costs()
 
@@ -323,6 +338,7 @@ async def write_report(
                 "output_type": output_type,
                 "report": report,
                 "source_count": len(sources),
+                "sources": format_sources_for_response(sources),
                 "costs": costs,
             })
 
@@ -343,6 +359,7 @@ async def write_report(
             "total_word_count": mcp.reports[research_id]["total_word_count"],
             "first_section": sections[0]["content"] if sections else "",
             "source_count": len(sources),
+            "sources": format_sources_for_response(sources),
             "costs": costs,
         })
     except Exception as e:
