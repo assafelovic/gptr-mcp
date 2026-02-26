@@ -227,38 +227,62 @@ async def deep_research(
 
 
 @mcp.tool()
-async def quick_search(query: str) -> Dict[str, Any]:
+async def quick_search(
+    query: str,
+    output_type: str = "raw",
+) -> Dict[str, Any]:
     """
-    Perform a quick web search on a given query and return search results with snippets.
-    This optimizes for speed over quality and is useful when an LLM doesn't need in-depth
-    information on a topic.
-    
+    Perform a quick web search and return results as raw snippets or an LLM-synthesized summary.
+
+    Choose output_type based on your needs:
+    - "raw" (default): Return raw search result snippets. Fast, no LLM cost.
+    - "summary": Return a single LLM-synthesized summary grounded in search results.
+      Use when you need a quick factual answer without full deep_research.
+
+    For in-depth analysis, use deep_research() instead.
+
     Args:
         query: The search query
-        
-    Returns:
-        Dict containing search results and snippets
+        output_type: "raw" for search snippets (default), "summary" for LLM synthesis
     """
-    logger.info(f"Performing quick search on query: {query}...")
-    
+    if output_type not in ("raw", "summary"):
+        return {"status": "error", "message": f"Unknown output_type '{output_type}' for quick_search. Valid: raw, summary"}
+
+    logger.info(f"Quick search: query={query!r}, output_type={output_type}")
+
     # Generate a unique ID for this search session
     search_id = str(uuid.uuid4())
-    
+
     # Initialize GPT Researcher
     researcher = GPTResearcher(query)
-    
+
     try:
-        # Perform quick search
-        search_results = await researcher.quick_search(query=query)
+        # Perform quick search with optional summarization
+        result = await researcher.quick_search(
+            query=query,
+            aggregated_summary=(output_type == "summary"),
+        )
         mcp.researchers[search_id] = researcher
-        logger.info(f"Quick search completed for ID: {search_id}")
-        
-        return create_success_response({
-            "search_id": search_id,
-            "query": query,
-            "result_count": len(search_results) if search_results else 0,
-            "search_results": search_results
-        })
+
+        if output_type == "summary":
+            # result is a summary string
+            logger.info(f"Quick search summary completed for ID: {search_id}")
+            return create_success_response({
+                "search_id": search_id,
+                "query": query,
+                "output_type": "summary",
+                "summary": result,
+            })
+        else:
+            # result is a list of search results
+            logger.info(f"Quick search completed for ID: {search_id}")
+            return create_success_response({
+                "search_id": search_id,
+                "query": query,
+                "output_type": "raw",
+                "result_count": len(result) if result else 0,
+                "search_results": result,
+            })
     except Exception as e:
         return handle_exception(e, "Quick search")
 
