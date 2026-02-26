@@ -4,6 +4,7 @@ GPT Researcher MCP Server Utilities
 This module provides utility functions and helpers for the GPT Researcher MCP Server.
 """
 
+import re
 import sys
 from typing import Dict, List, Optional, Tuple, Any
 from loguru import logger
@@ -136,4 +137,88 @@ def create_research_prompt(topic: str, goal: str, report_format: str = "research
     - Use the write_report tool with a custom prompt to generate a structured {report_format}
     
     You can also use get_research_sources to view additional details about the information sources.
-    """ 
+    """
+
+
+def parse_report_sections(markdown: str) -> list[dict]:
+    """Split a markdown report into sections by ## headers.
+
+    Returns list of dicts: {"index": int, "title": str, "content": str, "word_count": int}
+    Content before the first ## becomes section 0 (titled from # header or "Content").
+    h3 (###) headers are NOT split -- they stay within their parent section.
+    """
+    parts = re.split(r'^(## .+)$', markdown, flags=re.MULTILINE)
+
+    sections = []
+
+    preamble = parts[0].strip()
+    if preamble:
+        h1_match = re.match(r'^# (.+)$', preamble, re.MULTILINE)
+        title = h1_match.group(1).strip() if h1_match else "Content"
+        sections.append({
+            "index": 0,
+            "title": title,
+            "content": preamble,
+            "word_count": len(preamble.split()),
+        })
+
+    i = 1
+    while i < len(parts):
+        header = parts[i].strip()
+        content = parts[i + 1].strip() if i + 1 < len(parts) else ""
+        title = header.replace("## ", "", 1).strip()
+        full_content = f"{header}\n{content}" if content else header
+        sections.append({
+            "index": len(sections),
+            "title": title,
+            "content": full_content,
+            "word_count": len(full_content.split()),
+        })
+        i += 2
+
+    if not sections:
+        sections.append({
+            "index": 0,
+            "title": "Content",
+            "content": markdown.strip(),
+            "word_count": len(markdown.split()),
+        })
+
+    return sections
+
+
+def chunk_context(snippets: list[str], max_words: int = 2000) -> list[dict]:
+    """Group research context snippets into chunks of approximately max_words.
+
+    Returns list of dicts: {"index": int, "content": str, "word_count": int}
+    """
+    if not snippets:
+        return []
+
+    chunks = []
+    current_content = []
+    current_words = 0
+
+    for snippet in snippets:
+        snippet_words = len(snippet.split())
+        if current_words + snippet_words > max_words and current_content:
+            content = "\n\n---\n\n".join(current_content)
+            chunks.append({
+                "index": len(chunks),
+                "content": content,
+                "word_count": current_words,
+            })
+            current_content = []
+            current_words = 0
+        current_content.append(snippet)
+        current_words += snippet_words
+
+    if current_content:
+        content = "\n\n---\n\n".join(current_content)
+        chunks.append({
+            "index": len(chunks),
+            "content": content,
+            "word_count": current_words,
+        })
+
+    return chunks 
