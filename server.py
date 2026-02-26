@@ -20,13 +20,22 @@ load_dotenv()
 
 from utils import (
     research_store,
-    create_success_response, 
+    create_success_response,
     handle_exception,
-    get_researcher_by_id, 
+    get_researcher_by_id,
     format_sources_for_response,
-    format_context_with_sources, 
+    format_context_with_sources,
     store_research_results,
-    create_research_prompt
+    create_research_prompt,
+    parse_report_sections,
+    chunk_context,
+)
+from presets import (
+    apply_preset,
+    validate_output_type,
+    is_paginated_type,
+    is_raw_context,
+    VALID_OUTPUT_TYPES,
 )
 
 logging.basicConfig(
@@ -44,6 +53,9 @@ mcp = FastMCP(
 # Initialize researchers dictionary
 if not hasattr(mcp, "researchers"):
     mcp.researchers = {}
+
+if not hasattr(mcp, "reports"):
+    mcp.reports = {}
 
 
 @mcp.resource("research://{topic}")
@@ -91,122 +103,333 @@ async def research_resource(topic: str) -> str:
 
 
 @mcp.tool()
-async def deep_research(query: str) -> Dict[str, Any]:
+async def deep_research(
+    query: str,
+    output_type: str = "briefing",
+    breadth: int = 4,
+    depth: int = 2,
+    concurrency: int = 4,
+) -> Dict[str, Any]:
     """
-    Conduct a web deep research on a given query using GPT Researcher. 
-    Use this tool when you need time-sensitive, real-time information like stock prices, news, people, specific knowledge, etc.
-    
+    Conduct deep recursive web research and return results in the requested format.
+
+    Choose output_type based on your needs:
+    - "summary" (~300-500 tokens): Bullet-point key facts. Use for factual lookups.
+    - "briefing" (~800-1500 tokens): Executive synthesis. Default, good for most queries.
+    - "report" (~2000-4000 tokens, paginated): Full structured report. Use when user asks for analysis.
+    - "deep_report" (~4000-8000 tokens, paginated): Comprehensive report. Use for "write me a detailed report".
+    - "raw_context" (variable, paginated): Raw research snippets. Use when you want to reason over sources yourself.
+
+    For paginated types (report, deep_report, raw_context), you receive a table_of_contents
+    and the first section. Use get_report_section(research_id, section) to fetch more sections.
+
     Args:
         query: The research query or topic
-        
-    Returns:
-        Dict containing research status, ID, and the actual research context and sources
-        that can be used directly by LLMs for context enrichment
+        output_type: Output format — summary, briefing, report, deep_report, or raw_context
+        breadth: Number of search queries per research level (default 4)
+        depth: Number of recursive research levels (default 2)
+        concurrency: Max concurrent research tasks (default 4)
     """
-    logger.info(f"Conducting research on query: {query}...")
-    
-    # Generate a unique ID for this research session
+    try:
+        validate_output_type(output_type)
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+
+    logger.info(f"Deep research: query={query!r}, output_type={output_type}, breadth={breadth}, depth={depth}")
+
+    os.environ["DEEP_RESEARCH_BREADTH"] = str(breadth)
+    os.environ["DEEP_RESEARCH_DEPTH"] = str(depth)
+    os.environ["DEEP_RESEARCH_CONCURRENCY"] = str(concurrency)
+
+    saved_scraper = os.environ.get("SCRAPER")
+    os.environ["SCRAPER"] = "bs"
+
     research_id = str(uuid.uuid4())
-    
-    # Initialize GPT Researcher
-    researcher = GPTResearcher(query)
-    
-    # Start research
+    researcher = GPTResearcher(query, report_type="deep")
+
     try:
         await researcher.conduct_research()
         mcp.researchers[research_id] = researcher
-        logger.info(f"Research completed for ID: {research_id}")
-        
-        # Get the research context and sources
+        logger.info(f"Research completed: {research_id}")
+
         context = researcher.get_research_context()
         sources = researcher.get_research_sources()
         source_urls = researcher.get_source_urls()
-        
-        # Store in the research store for the resource API
         store_research_results(query, context, sources, source_urls)
-        
+        formatted_sources = format_sources_for_response(sources)
+
+        # Raw context: skip report generation, paginate context directly
+        if is_raw_context(output_type):
+            snippets = context if isinstance(context, list) else [context]
+            chunks = chunk_context(snippets)
+            mcp.reports[research_id] = {
+                "chunks": chunks,
+                "output_type": "raw_context",
+                "total_word_count": sum(c["word_count"] for c in chunks),
+            }
+            return create_success_response({
+                "research_id": research_id,
+                "output_type": "raw_context",
+                "context_chunks": len(chunks),
+                "total_word_count": mcp.reports[research_id]["total_word_count"],
+                "first_chunk": chunks[0]["content"] if chunks else "",
+                "source_count": len(sources),
+                "sources": formatted_sources,
+            })
+
+        # Generate report with preset
+        saved_total_words = os.environ.get("TOTAL_WORDS")
+        try:
+            custom_prompt = apply_preset(output_type)
+            report = await researcher.write_report(custom_prompt=custom_prompt if custom_prompt else "")
+        finally:
+            if saved_total_words is not None:
+                os.environ["TOTAL_WORDS"] = saved_total_words
+            else:
+                os.environ.pop("TOTAL_WORDS", None)
+
+        # Compact types: return full report inline
+        if not is_paginated_type(output_type):
+            return create_success_response({
+                "research_id": research_id,
+                "output_type": output_type,
+                "report": report,
+                "source_count": len(sources),
+                "sources": formatted_sources,
+                "has_full_report": False,
+            })
+
+        # Paginated types: split into sections, return TOC + first section
+        sections = parse_report_sections(report)
+        mcp.reports[research_id] = {
+            "sections": sections,
+            "output_type": output_type,
+            "total_word_count": sum(s["word_count"] for s in sections),
+            "raw_markdown": report,
+        }
+        toc = [{"index": s["index"], "title": s["title"], "word_count": s["word_count"]} for s in sections]
+
         return create_success_response({
             "research_id": research_id,
-            "query": query,
+            "output_type": output_type,
+            "table_of_contents": toc,
+            "total_word_count": mcp.reports[research_id]["total_word_count"],
+            "first_section": sections[0]["content"] if sections else "",
             "source_count": len(sources),
-            "context": context,
-            "sources": format_sources_for_response(sources),
-            "source_urls": source_urls
         })
     except Exception as e:
         return handle_exception(e, "Research")
+    finally:
+        if saved_scraper is not None:
+            os.environ["SCRAPER"] = saved_scraper
+        else:
+            os.environ.pop("SCRAPER", None)
 
 
 @mcp.tool()
-async def quick_search(query: str) -> Dict[str, Any]:
+async def quick_search(
+    query: str,
+    output_type: str = "raw",
+) -> Dict[str, Any]:
     """
-    Perform a quick web search on a given query and return search results with snippets.
-    This optimizes for speed over quality and is useful when an LLM doesn't need in-depth
-    information on a topic.
-    
+    Perform a quick web search and return results as raw snippets or an LLM-synthesized summary.
+
+    Choose output_type based on your needs:
+    - "raw" (default): Return raw search result snippets. Fast, no LLM cost.
+    - "summary": Return a single LLM-synthesized summary grounded in search results.
+      Use when you need a quick factual answer without full deep_research.
+
+    For in-depth analysis, use deep_research() instead.
+
     Args:
         query: The search query
-        
-    Returns:
-        Dict containing search results and snippets
+        output_type: "raw" for search snippets (default), "summary" for LLM synthesis
     """
-    logger.info(f"Performing quick search on query: {query}...")
-    
+    if output_type not in ("raw", "summary"):
+        return {"status": "error", "message": f"Unknown output_type '{output_type}' for quick_search. Valid: raw, summary"}
+
+    logger.info(f"Quick search: query={query!r}, output_type={output_type}")
+
     # Generate a unique ID for this search session
     search_id = str(uuid.uuid4())
-    
+
     # Initialize GPT Researcher
     researcher = GPTResearcher(query)
-    
+
     try:
-        # Perform quick search
-        search_results = await researcher.quick_search(query=query)
+        # Perform quick search with optional summarization
+        result = await researcher.quick_search(
+            query=query,
+            aggregated_summary=(output_type == "summary"),
+        )
         mcp.researchers[search_id] = researcher
-        logger.info(f"Quick search completed for ID: {search_id}")
-        
-        return create_success_response({
-            "search_id": search_id,
-            "query": query,
-            "result_count": len(search_results) if search_results else 0,
-            "search_results": search_results
-        })
+
+        if output_type == "summary":
+            # result is a summary string
+            logger.info(f"Quick search summary completed for ID: {search_id}")
+            return create_success_response({
+                "search_id": search_id,
+                "query": query,
+                "output_type": "summary",
+                "summary": result,
+            })
+        else:
+            # result is a list of search results
+            logger.info(f"Quick search completed for ID: {search_id}")
+            return create_success_response({
+                "search_id": search_id,
+                "query": query,
+                "output_type": "raw",
+                "result_count": len(result) if result else 0,
+                "search_results": result,
+            })
     except Exception as e:
         return handle_exception(e, "Quick search")
 
 
 @mcp.tool()
-async def write_report(research_id: str, custom_prompt: Optional[str] = None) -> Dict[str, Any]:
+async def write_report(
+    research_id: str,
+    output_type: str = "report",
+    custom_prompt: Optional[str] = None,
+) -> Dict[str, Any]:
     """
-    Generate a report based on previously conducted research.
-    
+    Generate a report from an existing research session in the requested format.
+    Reuses already-gathered research data — no new web searches.
+
+    Useful workflow: get a "summary" first from deep_research, then call
+    write_report with "report" for full analysis if needed.
+
+    If custom_prompt is provided, it overrides the output_type preset.
+
     Args:
-        research_id: The ID of the research session from deep_research
-        custom_prompt: Optional custom prompt for report generation
-        
-    Returns:
-        Dict containing the report content and metadata
+        research_id: The ID from deep_research or quick_search
+        output_type: Output format — summary, briefing, report, deep_report, raw_context
+        custom_prompt: Optional custom prompt (overrides output_type preset)
     """
     success, researcher, error = get_researcher_by_id(mcp.researchers, research_id)
     if not success:
         return error
-    
-    logger.info(f"Generating report for research ID: {research_id}")
-    
+
     try:
-        # Generate report
-        report = await researcher.write_report(custom_prompt=custom_prompt)
-        
-        # Get additional information
+        validate_output_type(output_type)
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+
+    logger.info(f"Writing report: research_id={research_id}, output_type={output_type}")
+
+    # Raw context: return paginated context, no LLM generation
+    if is_raw_context(output_type):
+        context = researcher.get_research_context()
+        snippets = context if isinstance(context, list) else [context]
+        chunks = chunk_context(snippets)
+        mcp.reports[research_id] = {
+            "chunks": chunks,
+            "output_type": "raw_context",
+            "total_word_count": sum(c["word_count"] for c in chunks),
+        }
+        return create_success_response({
+            "research_id": research_id,
+            "output_type": "raw_context",
+            "context_chunks": len(chunks),
+            "total_word_count": mcp.reports[research_id]["total_word_count"],
+            "first_chunk": chunks[0]["content"] if chunks else "",
+        })
+
+    try:
+        # custom_prompt overrides preset
+        saved_total_words = os.environ.get("TOTAL_WORDS")
+        try:
+            if custom_prompt:
+                prompt = custom_prompt
+            else:
+                prompt = apply_preset(output_type)
+
+            report = await researcher.write_report(custom_prompt=prompt if prompt else "")
+        finally:
+            if saved_total_words is not None:
+                os.environ["TOTAL_WORDS"] = saved_total_words
+            else:
+                os.environ.pop("TOTAL_WORDS", None)
+
         sources = researcher.get_research_sources()
         costs = researcher.get_costs()
-        
+
+        # Compact types: return full report
+        if not is_paginated_type(output_type):
+            return create_success_response({
+                "research_id": research_id,
+                "output_type": output_type,
+                "report": report,
+                "source_count": len(sources),
+                "sources": format_sources_for_response(sources),
+                "costs": costs,
+            })
+
+        # Paginated types: split and return TOC + first section
+        sections = parse_report_sections(report)
+        mcp.reports[research_id] = {
+            "sections": sections,
+            "output_type": output_type,
+            "total_word_count": sum(s["word_count"] for s in sections),
+            "raw_markdown": report,
+        }
+        toc = [{"index": s["index"], "title": s["title"], "word_count": s["word_count"]} for s in sections]
+
         return create_success_response({
-            "report": report,
+            "research_id": research_id,
+            "output_type": output_type,
+            "table_of_contents": toc,
+            "total_word_count": mcp.reports[research_id]["total_word_count"],
+            "first_section": sections[0]["content"] if sections else "",
             "source_count": len(sources),
-            "costs": costs
+            "sources": format_sources_for_response(sources),
+            "costs": costs,
         })
     except Exception as e:
         return handle_exception(e, "Report generation")
+
+
+@mcp.tool()
+async def get_report_section(research_id: str, section: int) -> Dict[str, Any]:
+    """
+    Retrieve a specific section from a paginated report or raw_context result.
+    Use the section index from the table_of_contents or context_chunks count
+    returned by deep_research or write_report.
+
+    Args:
+        research_id: The research session ID
+        section: Section index (0-based) from table_of_contents
+    """
+    if research_id not in mcp.reports:
+        return {"status": "error", "message": f"No paginated report found for research_id '{research_id}'. Run deep_research or write_report with a paginated output_type first."}
+
+    report_data = mcp.reports[research_id]
+
+    if report_data["output_type"] == "raw_context":
+        chunks = report_data["chunks"]
+        if section < 0 or section >= len(chunks):
+            return {"status": "error", "message": f"Section index {section} out of range. Valid: 0-{len(chunks) - 1}"}
+        chunk = chunks[section]
+        return create_success_response({
+            "section_index": section,
+            "section_title": f"Chunk {section + 1}",
+            "content": chunk["content"],
+            "word_count": chunk["word_count"],
+            "is_last": section == len(chunks) - 1,
+        })
+    else:
+        sections = report_data["sections"]
+        if section < 0 or section >= len(sections):
+            return {"status": "error", "message": f"Section index {section} out of range. Valid: 0-{len(sections) - 1}"}
+        sec = sections[section]
+        return create_success_response({
+            "section_index": sec["index"],
+            "section_title": sec["title"],
+            "content": sec["content"],
+            "word_count": sec["word_count"],
+            "is_last": section == len(sections) - 1,
+        })
 
 
 @mcp.tool()

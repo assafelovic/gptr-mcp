@@ -2,10 +2,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies + Chromium for nodriver scraper
 RUN apt-get update && apt-get install -y \
     curl git \
+    chromium \
     && rm -rf /var/lib/apt/lists/*
+
+# nodriver needs to find the Chromium binary
+ENV CHROME_PATH=/usr/bin/chromium
 
 # Copy requirements first for better Docker layer caching
 COPY requirements.txt .
