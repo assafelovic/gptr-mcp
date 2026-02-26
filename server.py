@@ -350,6 +350,48 @@ async def write_report(
 
 
 @mcp.tool()
+async def get_report_section(research_id: str, section: int) -> Dict[str, Any]:
+    """
+    Retrieve a specific section from a paginated report or raw_context result.
+    Use the section index from the table_of_contents or context_chunks count
+    returned by deep_research or write_report.
+
+    Args:
+        research_id: The research session ID
+        section: Section index (0-based) from table_of_contents
+    """
+    if research_id not in mcp.reports:
+        return {"status": "error", "message": f"No paginated report found for research_id '{research_id}'. Run deep_research or write_report with a paginated output_type first."}
+
+    report_data = mcp.reports[research_id]
+
+    if report_data["output_type"] == "raw_context":
+        chunks = report_data["chunks"]
+        if section < 0 or section >= len(chunks):
+            return {"status": "error", "message": f"Section index {section} out of range. Valid: 0-{len(chunks) - 1}"}
+        chunk = chunks[section]
+        return create_success_response({
+            "section_index": section,
+            "section_title": f"Chunk {section + 1}",
+            "content": chunk["content"],
+            "word_count": chunk["word_count"],
+            "is_last": section == len(chunks) - 1,
+        })
+    else:
+        sections = report_data["sections"]
+        if section < 0 or section >= len(sections):
+            return {"status": "error", "message": f"Section index {section} out of range. Valid: 0-{len(sections) - 1}"}
+        sec = sections[section]
+        return create_success_response({
+            "section_index": sec["index"],
+            "section_title": sec["title"],
+            "content": sec["content"],
+            "word_count": sec["word_count"],
+            "is_last": section == len(sections) - 1,
+        })
+
+
+@mcp.tool()
 async def get_research_sources(research_id: str) -> Dict[str, Any]:
     """
     Get the sources used in the research.
