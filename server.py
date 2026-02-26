@@ -20,13 +20,22 @@ load_dotenv()
 
 from utils import (
     research_store,
-    create_success_response, 
+    create_success_response,
     handle_exception,
-    get_researcher_by_id, 
+    get_researcher_by_id,
     format_sources_for_response,
-    format_context_with_sources, 
+    format_context_with_sources,
     store_research_results,
-    create_research_prompt
+    create_research_prompt,
+    parse_report_sections,
+    chunk_context,
+)
+from presets import (
+    apply_preset,
+    validate_output_type,
+    is_paginated_type,
+    is_raw_context,
+    VALID_OUTPUT_TYPES,
 )
 
 logging.basicConfig(
@@ -44,6 +53,9 @@ mcp = FastMCP(
 # Initialize researchers dictionary
 if not hasattr(mcp, "researchers"):
     mcp.researchers = {}
+
+if not hasattr(mcp, "reports"):
+    mcp.reports = {}
 
 
 @mcp.resource("research://{topic}")
@@ -93,72 +105,114 @@ async def research_resource(topic: str) -> str:
 @mcp.tool()
 async def deep_research(
     query: str,
+    output_type: str = "briefing",
     breadth: int = 4,
     depth: int = 2,
     concurrency: int = 4,
 ) -> Dict[str, Any]:
     """
-    Conduct recursive deep web research on a given query using GPT Researcher.
-    Uses multi-level recursive research: generates N search queries per level (breadth),
-    recursively explores follow-up questions (depth). Use this tool when you need
-    thorough, time-sensitive, real-time information like stock prices, news, people,
-    specific knowledge, etc.
+    Conduct deep recursive web research and return results in the requested format.
+
+    Choose output_type based on your needs:
+    - "summary" (~300-500 tokens): Bullet-point key facts. Use for factual lookups.
+    - "briefing" (~800-1500 tokens): Executive synthesis. Default, good for most queries.
+    - "report" (~2000-4000 tokens, paginated): Full structured report. Use when user asks for analysis.
+    - "deep_report" (~4000-8000 tokens, paginated): Comprehensive report. Use for "write me a detailed report".
+    - "raw_context" (variable, paginated): Raw research snippets. Use when you want to reason over sources yourself.
+
+    For paginated types (report, deep_report, raw_context), you receive a table_of_contents
+    and the first section. Use get_report_section(research_id, section) to fetch more sections.
 
     Args:
         query: The research query or topic
+        output_type: Output format — summary, briefing, report, deep_report, or raw_context
         breadth: Number of search queries per research level (default 4)
         depth: Number of recursive research levels (default 2)
         concurrency: Max concurrent research tasks (default 4)
-
-    Returns:
-        Dict containing research status, ID, and the actual research context and sources
-        that can be used directly by LLMs for context enrichment
     """
-    logger.info(f"Conducting deep research on query: {query} (breadth={breadth}, depth={depth}, concurrency={concurrency})...")
+    try:
+        validate_output_type(output_type)
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
 
-    # Set deep research config via env vars (read by gpt-researcher's config)
+    logger.info(f"Deep research: query={query!r}, output_type={output_type}, breadth={breadth}, depth={depth}")
+
     os.environ["DEEP_RESEARCH_BREADTH"] = str(breadth)
     os.environ["DEEP_RESEARCH_DEPTH"] = str(depth)
     os.environ["DEEP_RESEARCH_CONCURRENCY"] = str(concurrency)
 
-    # Use BeautifulSoup scraper for deep research: the nodriver browser pool
-    # cannot handle concurrent sub-researchers (shared class-level state causes deadlocks).
-    # quick_search uses the default (nodriver) since it runs a single researcher.
     saved_scraper = os.environ.get("SCRAPER")
     os.environ["SCRAPER"] = "bs"
 
-    # Generate a unique ID for this research session
     research_id = str(uuid.uuid4())
-
-    # Initialize GPT Researcher in deep mode
     researcher = GPTResearcher(query, report_type="deep")
 
-    # Start research
     try:
         await researcher.conduct_research()
         mcp.researchers[research_id] = researcher
-        logger.info(f"Deep research completed for ID: {research_id}")
+        logger.info(f"Research completed: {research_id}")
 
-        # Get the research context and sources
         context = researcher.get_research_context()
         sources = researcher.get_research_sources()
         source_urls = researcher.get_source_urls()
-
-        # Store in the research store for the resource API
         store_research_results(query, context, sources, source_urls)
+        formatted_sources = format_sources_for_response(sources)
+
+        # Raw context: skip report generation, paginate context directly
+        if is_raw_context(output_type):
+            snippets = context if isinstance(context, list) else [context]
+            chunks = chunk_context(snippets)
+            mcp.reports[research_id] = {
+                "chunks": chunks,
+                "output_type": "raw_context",
+                "total_word_count": sum(c["word_count"] for c in chunks),
+            }
+            return create_success_response({
+                "research_id": research_id,
+                "output_type": "raw_context",
+                "context_chunks": len(chunks),
+                "total_word_count": mcp.reports[research_id]["total_word_count"],
+                "first_chunk": chunks[0]["content"] if chunks else "",
+                "source_count": len(sources),
+                "sources": formatted_sources,
+            })
+
+        # Generate report with preset
+        custom_prompt = apply_preset(output_type)
+        report = await researcher.write_report(custom_prompt=custom_prompt or "")
+
+        # Compact types: return full report inline
+        if not is_paginated_type(output_type):
+            return create_success_response({
+                "research_id": research_id,
+                "output_type": output_type,
+                "report": report,
+                "source_count": len(sources),
+                "sources": formatted_sources,
+                "has_full_report": False,
+            })
+
+        # Paginated types: split into sections, return TOC + first section
+        sections = parse_report_sections(report)
+        mcp.reports[research_id] = {
+            "sections": sections,
+            "output_type": output_type,
+            "total_word_count": sum(s["word_count"] for s in sections),
+            "raw_markdown": report,
+        }
+        toc = [{"index": s["index"], "title": s["title"], "word_count": s["word_count"]} for s in sections]
 
         return create_success_response({
             "research_id": research_id,
-            "query": query,
+            "output_type": output_type,
+            "table_of_contents": toc,
+            "total_word_count": mcp.reports[research_id]["total_word_count"],
+            "first_section": sections[0]["content"] if sections else "",
             "source_count": len(sources),
-            "context": context,
-            "sources": format_sources_for_response(sources),
-            "source_urls": source_urls
         })
     except Exception as e:
         return handle_exception(e, "Research")
     finally:
-        # Restore original scraper setting
         if saved_scraper is not None:
             os.environ["SCRAPER"] = saved_scraper
         else:
