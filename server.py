@@ -257,35 +257,93 @@ async def quick_search(query: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
-async def write_report(research_id: str, custom_prompt: Optional[str] = None) -> Dict[str, Any]:
+async def write_report(
+    research_id: str,
+    output_type: str = "report",
+    custom_prompt: Optional[str] = None,
+) -> Dict[str, Any]:
     """
-    Generate a report based on previously conducted research.
-    
+    Generate a report from an existing research session in the requested format.
+    Reuses already-gathered research data — no new web searches.
+
+    Useful workflow: get a "summary" first from deep_research, then call
+    write_report with "report" for full analysis if needed.
+
+    If custom_prompt is provided, it overrides the output_type preset.
+
     Args:
-        research_id: The ID of the research session from deep_research
-        custom_prompt: Optional custom prompt for report generation
-        
-    Returns:
-        Dict containing the report content and metadata
+        research_id: The ID from deep_research or quick_search
+        output_type: Output format — summary, briefing, report, deep_report, raw_context
+        custom_prompt: Optional custom prompt (overrides output_type preset)
     """
     success, researcher, error = get_researcher_by_id(mcp.researchers, research_id)
     if not success:
         return error
-    
-    logger.info(f"Generating report for research ID: {research_id}")
-    
+
     try:
-        # Generate report
-        report = await researcher.write_report(custom_prompt=custom_prompt)
-        
-        # Get additional information
+        validate_output_type(output_type)
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+
+    logger.info(f"Writing report: research_id={research_id}, output_type={output_type}")
+
+    # Raw context: return paginated context, no LLM generation
+    if is_raw_context(output_type):
+        context = researcher.get_research_context()
+        snippets = context if isinstance(context, list) else [context]
+        chunks = chunk_context(snippets)
+        mcp.reports[research_id] = {
+            "chunks": chunks,
+            "output_type": "raw_context",
+            "total_word_count": sum(c["word_count"] for c in chunks),
+        }
+        return create_success_response({
+            "research_id": research_id,
+            "output_type": "raw_context",
+            "context_chunks": len(chunks),
+            "total_word_count": mcp.reports[research_id]["total_word_count"],
+            "first_chunk": chunks[0]["content"] if chunks else "",
+        })
+
+    try:
+        # custom_prompt overrides preset
+        if custom_prompt:
+            prompt = custom_prompt
+        else:
+            prompt = apply_preset(output_type)
+
+        report = await researcher.write_report(custom_prompt=prompt or "")
         sources = researcher.get_research_sources()
         costs = researcher.get_costs()
-        
+
+        # Compact types: return full report
+        if not is_paginated_type(output_type):
+            return create_success_response({
+                "research_id": research_id,
+                "output_type": output_type,
+                "report": report,
+                "source_count": len(sources),
+                "costs": costs,
+            })
+
+        # Paginated types: split and return TOC + first section
+        sections = parse_report_sections(report)
+        mcp.reports[research_id] = {
+            "sections": sections,
+            "output_type": output_type,
+            "total_word_count": sum(s["word_count"] for s in sections),
+            "raw_markdown": report,
+        }
+        toc = [{"index": s["index"], "title": s["title"], "word_count": s["word_count"]} for s in sections]
+
         return create_success_response({
-            "report": report,
+            "research_id": research_id,
+            "output_type": output_type,
+            "table_of_contents": toc,
+            "total_word_count": mcp.reports[research_id]["total_word_count"],
+            "first_section": sections[0]["content"] if sections else "",
             "source_count": len(sources),
-            "costs": costs
+            "costs": costs,
         })
     except Exception as e:
         return handle_exception(e, "Report generation")
