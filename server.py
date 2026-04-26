@@ -276,9 +276,22 @@ async def health_check(request):
 
 def run_server():
     """Run the MCP server using FastMCP's built-in event loop handling."""
-    # Check if API keys are set
-    if not os.getenv("OPENAI_API_KEY"):
-        logger.error("OPENAI_API_KEY not found. Please set it in your .env file.")
+    # Accept any supported LLM provider key, not just OpenAI.
+    # gpt-researcher itself supports anthropic, groq, cohere, google, mistral, etc.
+    llm_key_vars = (
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GROQ_API_KEY",
+        "COHERE_API_KEY",
+        "GOOGLE_API_KEY",
+        "MISTRAL_API_KEY",
+        "TOGETHER_API_KEY",
+    )
+    if not any(os.getenv(k) for k in llm_key_vars):
+        logger.error(
+            "No LLM API key found. Set one of: %s in your .env file.",
+            ", ".join(llm_key_vars),
+        )
         return
 
     # Determine transport based on environment
