@@ -51,18 +51,23 @@ def get_researcher_by_id(researchers_dict: Dict, research_id: str) -> Tuple[bool
 def format_sources_for_response(sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Format source information for API responses.
-    
+
     Args:
         sources: List of source dictionaries
-        
+
     Returns:
         Formatted source list for API responses
     """
+    # GPTResearcher.get_research_sources() populates each dict from
+    # gpt_researcher's scraper output (gpt_researcher/scraper/scraper.py),
+    # which keys the scraped text as "raw_content", not "content". Reading
+    # "content" here always missed, so content_length was 0 for every source
+    # regardless of how much text was actually scraped.
     return [
         {
             "title": source.get("title", "Unknown"),
             "url": source.get("url", ""),
-            "content_length": len(source.get("content", ""))
+            "content_length": len(source.get("raw_content", "") or "")
         }
         for source in sources
     ]
