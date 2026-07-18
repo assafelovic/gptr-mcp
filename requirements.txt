@@ -1,5 +1,11 @@
 # GPT Researcher dependencies
-gpt-researcher>=0.14.0
+# Upper bound excludes 0.16.0: gpt_researcher/actions/query_processing.py's
+# import ordering bug makes the entire package fail to import on that
+# release (NameError: name 'Any' is not defined at module load time).
+# Confirmed 0.14.8/0.15.0/0.15.1 all import fine; fix submitted upstream as
+# https://github.com/assafelovic/gpt-researcher/pull/1943 -- once merged and
+# released, this upper bound can be dropped.
+gpt-researcher>=0.14.0,<0.16.0
 python-dotenv
 
 # MCP dependencies
