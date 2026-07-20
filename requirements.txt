@@ -9,7 +9,7 @@
 # submitted as (#1943, #1944, #1951, #1952). Pin to a specific commit,
 # same as the mcp SDK override below -- rebase and bump periodically,
 # dropping whichever fixes upstream has since merged and released.
-gpt-researcher @ git+https://github.com/MrSampson/gpt-researcher.git@213f766bf6f03160585f020e1ed4ef9778f47a2f
+gpt-researcher @ git+https://github.com/MrSampson/gpt-researcher.git@c192b6cc4f33c6f680834783fb49cb8d67c2c94d
 python-dotenv
 
 # MCP dependencies
