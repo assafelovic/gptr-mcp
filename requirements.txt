@@ -1,15 +1,15 @@
 # GPT Researcher dependencies
 # Installed from our fork, not PyPI: gpt-researcher accumulated enough
-# separately-tracked bug fixes (issues #17, #20, #24 at spark-ba88) that
-# maintaining several interacting monkeypatches (with real ordering
-# dependencies between them) became more complex than owning the fixes as
-# native code. See MrSampson/gpt-researcher's spark-production branch and
-# services/research/README.md's "Forked gpt-researcher" section for the
-# full rationale and the individual upstream PRs each fix was also
-# submitted as (#1943, #1944, #1951, #1952). Pin to a specific commit,
-# same as the mcp SDK override below -- rebase and bump periodically,
-# dropping whichever fixes upstream has since merged and released.
-gpt-researcher @ git+https://github.com/MrSampson/gpt-researcher.git@c192b6cc4f33c6f680834783fb49cb8d67c2c94d
+# separately-tracked bug fixes that maintaining several interacting
+# monkeypatches (with real ordering dependencies between them) became more
+# complex than owning the fixes as native code. See MrSampson/gpt-researcher's
+# spark-production branch and services/research/README.md's "Forked
+# gpt-researcher" section for the full rationale and the individual
+# upstream PRs each fix was also submitted as (#1943, #1944, #1951, #1952).
+# Pin to a specific commit, same as the mcp SDK override below -- rebase
+# and bump periodically, dropping whichever fixes upstream has since
+# merged and released.
+gpt-researcher @ git+https://github.com/MrSampson/gpt-researcher.git@7190cf78a2b1aaa0864ec09d5b1fb59b217dac7c
 python-dotenv
 
 # MCP dependencies
