@@ -4,12 +4,14 @@
 # monkeypatches (with real ordering dependencies between them) became more
 # complex than owning the fixes as native code. See MrSampson/gpt-researcher's
 # spark-production branch and services/research/README.md's "Forked
-# gpt-researcher" section for the full rationale and the individual
-# upstream PRs each fix was also submitted as (#1943, #1944, #1951, #1952).
+# gpt-researcher" section for the full rationale. #1943, #1944, #1951 and
+# #1952 landed upstream (in a re-authored form) and were reconciled into
+# spark-production on 2026-08-24 when it was synced with upstream/main;
+# #1960, #1961 and #1967 are still open upstream.
 # Pin to a specific commit, same as the mcp SDK override below -- rebase
 # and bump periodically, dropping whichever fixes upstream has since
 # merged and released.
-gpt-researcher @ git+https://github.com/MrSampson/gpt-researcher.git@5ece4bed060b37171aef21c3d58be4a3eaf45a08
+gpt-researcher @ git+https://github.com/MrSampson/gpt-researcher.git@41897e5c5a7160f564600e04bb889c7c12c343f4
 python-dotenv
 
 # MCP dependencies
