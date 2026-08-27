@@ -51,18 +51,23 @@ def get_researcher_by_id(researchers_dict: Dict, research_id: str) -> Tuple[bool
 def format_sources_for_response(sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Format source information for API responses.
-    
+
     Args:
         sources: List of source dictionaries
-        
+
     Returns:
         Formatted source list for API responses
     """
+    # GPTResearcher.get_research_sources() populates each dict from
+    # gpt_researcher's scraper output (gpt_researcher/scraper/scraper.py),
+    # which keys the scraped text as "raw_content", not "content". Reading
+    # "content" here always missed, so content_length was 0 for every source
+    # regardless of how much text was actually scraped.
     return [
         {
             "title": source.get("title", "Unknown"),
             "url": source.get("url", ""),
-            "content_length": len(source.get("content", ""))
+            "content_length": len(source.get("raw_content", "") or "")
         }
         for source in sources
     ]
@@ -104,6 +109,85 @@ def store_research_results(topic: str, context: str, sources: List[Dict[str, Any
         "sources": sources,
         "source_urls": source_urls
     }
+
+
+class ProgressLogHandler:
+    """Forwards GPTResearcher's progress signals to MCP progress
+    notifications on the calling tool's request context.
+
+    Long research/search calls can legitimately exceed a client's idle
+    timeout; without any signal of ongoing work, the client has no way to
+    distinguish "still working" from "hung", and may abort. Each progress
+    notification resets the client's idle timer for clients that implement
+    the standard MCP behavior of resetting request timeouts on progress
+    notifications tied to the request's progressToken.
+
+    gpt_researcher has two independent, non-overlapping progress signal
+    paths, and both must be wired for real coverage:
+
+    - `log_handler` (agent.py's `_log_event`, handled below by
+      `on_research_step`/`on_tool_start`/`on_agent_action`) fires only a
+      handful of coarse macro-checkpoints: research start, agent selection,
+      "conducting_research", "research_completed", etc.
+    - the actual fine-grained, per-sub-query and per-source progress --
+      emitted throughout the real bottleneck: query planning, searching,
+      scraping, retrying blocked fetches -- goes through a *separate*
+      websocket-shaped call, `stream_output()`
+      (gpt_researcher/actions/utils.py), gated on `researcher.websocket`
+      being truthy and duck-typed to only need an async `send_json(data)`
+      method.
+
+    Passing this handler as `log_handler=` alone leaves that second path
+    unwired, so everything between the "conducting_research" and
+    "research_completed" checkpoints -- which is where all the actual
+    search/scrape work and retry time lives -- produces zero MCP progress,
+    however long it runs. Pass the same instance as both `log_handler=` and
+    `websocket=` to GPTResearcher to cover both paths.
+    """
+
+    def __init__(self, ctx) -> None:
+        self._ctx = ctx
+        self._step = 0
+
+    async def on_research_step(self, step: str, details: Dict[str, Any]) -> None:
+        await self._report(step)
+
+    async def on_tool_start(self, tool_name: str, **kwargs: Any) -> None:
+        await self._report(f"tool:{tool_name}")
+
+    async def on_agent_action(self, action: str, **kwargs: Any) -> None:
+        await self._report(f"action:{action}")
+
+    async def send_json(self, data: Dict[str, Any]) -> None:
+        message = data.get("output") or data.get("content") or data.get("type") or "progress"
+        # Most payloads reaching here are short human-readable log lines,
+        # but a few (e.g. the image-planning step's JSON-dumped image
+        # list) can run to multiple KB -- cap so one progress notification
+        # can't balloon.
+        await self._report(str(message)[:200])
+
+    async def _report(self, message: str) -> None:
+        self._step += 1
+        try:
+            await self._ctx.report_progress(progress=self._step, message=message)
+        except Exception:
+            # Progress reporting is best-effort telemetry, not part of the
+            # research result. The log_handler path (agent.py's
+            # _log_event) already swallows handler errors so a broken
+            # handler can't take down conduct_research(); the
+            # websocket-shaped stream_output() path this also serves
+            # (gpt_researcher/actions/utils.py) awaits send_json()
+            # unguarded, so without this a transport hiccup here would
+            # propagate out of conduct_research() and discard whatever
+            # research had already completed.
+            #
+            # loguru does NOT support the standard-library exc_info=
+            # kwarg -- it's silently absorbed as an unused str.format()
+            # argument, producing a log line with no exception type, no
+            # message, and no traceback. logger.opt(exception=True) is
+            # loguru's actual mechanism for attaching the current
+            # exception.
+            logger.opt(exception=True).warning("Failed to report MCP progress")
 
 
 def create_research_prompt(topic: str, goal: str, report_format: str = "research_report") -> str:

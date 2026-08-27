@@ -207,7 +207,7 @@ python server.py
 
 | Variable | Description | Default | Example |
 |----------|-------------|---------|---------|
-| `MCP_TRANSPORT` | Force specific transport | `stdio` | `sse`, `streamable-http` |
+| `MCP_TRANSPORT` | Force specific transport | `stdio` (`sse` if Docker is detected and this is unset) | `sse`, `streamable-http` |
 | `DOCKER_CONTAINER` | Force Docker mode | Auto-detected | `true` |
 
 ### Configuration Examples

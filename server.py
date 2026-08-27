@@ -12,7 +12,7 @@ import logging
 from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
 from fastapi.responses import JSONResponse
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 from gpt_researcher import GPTResearcher
 
 # Load environment variables
@@ -20,13 +20,14 @@ load_dotenv()
 
 from utils import (
     research_store,
-    create_success_response, 
+    create_success_response,
     handle_exception,
-    get_researcher_by_id, 
+    get_researcher_by_id,
     format_sources_for_response,
-    format_context_with_sources, 
+    format_context_with_sources,
     store_research_results,
-    create_research_prompt
+    create_research_prompt,
+    ProgressLogHandler,
 )
 
 logging.basicConfig(
@@ -90,77 +91,143 @@ async def research_resource(topic: str) -> str:
         return f"Error conducting research on '{topic}': {str(e)}"
 
 
-@mcp.tool()
-async def deep_research(query: str) -> Dict[str, Any]:
+def _make_researcher(query: str, ctx: Context) -> GPTResearcher:
+    """Build a GPTResearcher with MCP progress reporting wired for both of
+    gpt_researcher's independent signal paths -- see ProgressLogHandler's
+    docstring for why both log_handler= and websocket= are required. Both
+    tools pass the same handler instance so the two paths share one
+    monotonic progress counter instead of each emitting its own,
+    interleaved and out of order.
+
+    Note: only deep_research's conduct_research() actually exercises the
+    websocket path -- quick_search's retriever path
+    (gpt_researcher.actions.query_processing.get_search_results) never
+    calls stream_output, so websocket= is inert during quick_search()
+    itself. It's still wired here, for uniformity and so it works for free
+    if that path ever grows streaming, and because the researcher this
+    returns can later be reused by the standalone write_report tool (see
+    _release_progress_websocket).
     """
-    Conduct a web deep research on a given query using GPT Researcher. 
+    handler = ProgressLogHandler(ctx)
+    return GPTResearcher(query, log_handler=handler, websocket=handler)
+
+
+def _release_progress_websocket(researcher: GPTResearcher) -> None:
+    """Clear `websocket` once conduct_research()/quick_search() is done,
+    before the researcher is stored in mcp.researchers for reuse by a
+    later call.
+
+    A non-None `websocket` makes gpt_researcher's report-writing LLM call
+    disable its normal 10-attempt retry budget (stream=True and websocket
+    is not None -> 1 attempt instead of 10; see utils/llm.py) and
+    re-stream the entire generated report back through it, paragraph by
+    paragraph, as if it were progress -- neither wanted for report
+    generation, only for search-loop progress.
+
+    Must run before storage, not just before an inline write_report()
+    call: deep_research(synthesize_report=False) and quick_search() both
+    store their researcher in mcp.researchers, and the standalone
+    write_report tool reuses it later via research_id/search_id -- that
+    reuse needs the same clearing, or it hits the same regression.
+
+    Depends on a companion fix in the gpt-researcher fork:
+    ReportGenerator.write_report() must read researcher.websocket live at
+    call time, not the value gpt_researcher/skills/writer.py currently
+    freezes into research_params at GPTResearcher construction. Until that
+    fix is installed, this clear does silence a few verbose progress
+    messages gpt_researcher's write_report() reads live elsewhere (e.g.
+    the "writing_report" ping), but the retry-budget and re-streaming
+    problems above are not yet actually fixed -- see
+    test_installed_gpt_researcher_reads_websocket_live_at_report_time.
+    """
+    researcher.websocket = None
+
+
+@mcp.tool()
+async def deep_research(
+    query: str, ctx: Context, synthesize_report: bool = True
+) -> Dict[str, Any]:
+    """
+    Conduct a web deep research on a given query using GPT Researcher.
     Use this tool when you need time-sensitive, real-time information like stock prices, news, people, specific knowledge, etc.
-    
+
     Args:
         query: The research query or topic
-        
+        synthesize_report: If True (default), also synthesize and return a
+            written report alongside the raw context. Set False to skip
+            synthesis and get gather-only results faster/cheaper -- the
+            write_report tool can still be called later with the returned
+            research_id.
+
     Returns:
-        Dict containing research status, ID, and the actual research context and sources
-        that can be used directly by LLMs for context enrichment
+        Dict containing research status, ID, the actual research context and
+        sources (for direct LLM context enrichment), and -- unless
+        synthesize_report is False -- a synthesized "report".
     """
     logger.info(f"Conducting research on query: {query}...")
-    
+
     # Generate a unique ID for this research session
     research_id = str(uuid.uuid4())
-    
-    # Initialize GPT Researcher
-    researcher = GPTResearcher(query)
-    
+
+    researcher = _make_researcher(query, ctx)
+
     # Start research
     try:
         await researcher.conduct_research()
+        _release_progress_websocket(researcher)
         mcp.researchers[research_id] = researcher
         logger.info(f"Research completed for ID: {research_id}")
-        
+
         # Get the research context and sources
         context = researcher.get_research_context()
         sources = researcher.get_research_sources()
         source_urls = researcher.get_source_urls()
-        
+
         # Store in the research store for the resource API
         store_research_results(query, context, sources, source_urls)
-        
-        return create_success_response({
+
+        response_data = {
             "research_id": research_id,
             "query": query,
             "source_count": len(sources),
             "context": context,
             "sources": format_sources_for_response(sources),
             "source_urls": source_urls
-        })
+        }
+
+        if synthesize_report:
+            logger.info(f"Synthesizing report for research ID: {research_id}")
+            response_data["report"] = await researcher.write_report()
+
+        return create_success_response(response_data)
     except Exception as e:
         return handle_exception(e, "Research")
 
 
 @mcp.tool()
-async def quick_search(query: str) -> Dict[str, Any]:
+async def quick_search(query: str, ctx: Context) -> Dict[str, Any]:
     """
     Perform a quick web search on a given query and return search results with snippets.
     This optimizes for speed over quality and is useful when an LLM doesn't need in-depth
     information on a topic.
-    
+
     Args:
         query: The search query
-        
+
     Returns:
         Dict containing search results and snippets
     """
     logger.info(f"Performing quick search on query: {query}...")
-    
+
     # Generate a unique ID for this search session
     search_id = str(uuid.uuid4())
-    
-    # Initialize GPT Researcher
-    researcher = GPTResearcher(query)
-    
+
+    researcher = _make_researcher(query, ctx)
+
     try:
         # Perform quick search
         search_results = await researcher.quick_search(query=query)
+        _release_progress_websocket(researcher)
         mcp.researchers[search_id] = researcher
         logger.info(f"Quick search completed for ID: {search_id}")
         
@@ -281,14 +348,14 @@ def run_server():
         logger.error("OPENAI_API_KEY not found. Please set it in your .env file.")
         return
 
-    # Determine transport based on environment
-    transport = os.getenv("MCP_TRANSPORT", "stdio").lower()
-    
-    # Auto-detect Docker environment
-    if os.path.exists("/.dockerenv") or os.getenv("DOCKER_CONTAINER"):
-        transport = "sse"
-        logger.info("Docker environment detected, using SSE transport")
-    
+    # An explicit MCP_TRANSPORT always wins; Docker auto-detection only
+    # supplies a default when it's unset (or blank).
+    transport = (os.getenv("MCP_TRANSPORT") or "").strip().lower()
+    if not transport:
+        in_docker = os.path.exists("/.dockerenv") or bool(os.getenv("DOCKER_CONTAINER"))
+        transport = "sse" if in_docker else "stdio"
+        logger.info(f"MCP_TRANSPORT unset, defaulting to {transport} transport")
+
     # Add startup message
     logger.info(f"Starting GPT Researcher MCP Server with {transport} transport...")
     print(f"🚀 GPT Researcher MCP Server starting with {transport} transport...")
