@@ -15,7 +15,13 @@ gpt-researcher @ git+https://github.com/MrSampson/gpt-researcher.git@41897e5c5a7
 python-dotenv
 
 # MCP dependencies
-fastmcp>=2.8.0
+# Pinned exact, like the gpt-researcher and mcp SDK overrides above: this
+# was previously an unbounded floor (`>=2.8.0`), and fastmcp's 4.0.0
+# release (mcp<3.0.0,>=2.0.0) broke every install pinned to an mcp 1.x
+# SDK the moment it went stable, since fastmcp 3.x only ever required
+# mcp<2.0,>=1.24.0. 3.4.7 is the last 3.x release and the version this
+# fork is actually verified against.
+fastmcp==3.4.7
 fastapi>=0.103.1
 uvicorn>=0.23.2
 pydantic>=2.3.0
