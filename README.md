@@ -59,7 +59,7 @@ For detailed setup instructions, see the [full Claude Desktop Integration sectio
 
 ### Primary Tools
 
-- `deep_research`: Performs deep web research on a topic, finding the most reliable and relevant information
+- `deep_research`: Performs web research on a topic, finding the most reliable and relevant information. Optional arguments select the mode: `report_type` (`research_report` default, `detailed_report`, `deep` for recursive deep research, `outline_report`, `resource_report`, `subtopic_report`, `custom_report`), `tone` (`objective` default, `formal`, `analytical`, ...), `report_source` (`web` default, `local`, `hybrid`). Unknown values fall back to the defaults and are reported in the response `mode.notes`.
 - `quick_search`: Performs a fast web search optimized for speed over quality, returning search results with snippets. Supports any GPTR supported web retriever such as Tavily, Bing, Google, etc... Learn more [here](https://docs.gptr.dev/docs/gpt-researcher/search-engines)
 - `write_report`: Generate a report based on research results
 - `get_research_sources`: Get the sources used in the research

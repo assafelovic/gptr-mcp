@@ -90,15 +90,67 @@ async def research_resource(topic: str) -> str:
         return f"Error conducting research on '{topic}': {str(e)}"
 
 
+# --- research mode resolution ---------------------------------------------------------------
+_REPORT_TYPES = {"research_report", "detailed_report", "deep", "outline_report", "resource_report",
+                 "subtopic_report", "custom_report"}
+_REPORT_SOURCES = {"web", "local", "hybrid"}
+
+
+def _resolve_research_mode(report_type: str, tone: str, report_source: str) -> Dict[str, Any]:
+    """Map loosely typed agent inputs onto GPT Researcher's enums; fall back to defaults and say so."""
+    notes = []
+    rt = (report_type or "research_report").strip().lower()
+    if rt not in _REPORT_TYPES:
+        notes.append(f"unknown report_type '{report_type}', used research_report")
+        rt = "research_report"
+    rs = (report_source or "web").strip().lower()
+    if rs not in _REPORT_SOURCES:
+        notes.append(f"unknown report_source '{report_source}', used web")
+        rs = "web"
+    tone_value = None
+    try:
+        from gpt_researcher.utils.enum import Tone  # type: ignore
+        wanted = (tone or "objective").strip().lower()
+        for member in Tone:
+            if member.name.lower() == wanted or str(member.value).split(" ")[0].lower() == wanted:
+                tone_value = member
+                break
+        if tone_value is None:
+            notes.append(f"unknown tone '{tone}', used objective")
+            tone_value = Tone.Objective
+    except Exception as exc:  # pragma: no cover - library layout changed
+        notes.append(f"tone unavailable ({exc}); library default used")
+        tone_value = None
+    return {
+        "report_type": rt,
+        "report_source": rs,
+        "tone": tone_value,
+        "echo": {"report_type": rt, "report_source": rs,
+                 "tone": getattr(tone_value, "name", "default").lower(), "notes": notes},
+    }
+
+
 @mcp.tool()
-async def deep_research(query: str) -> Dict[str, Any]:
+async def deep_research(
+    query: str,
+    report_type: str = "research_report",
+    tone: str = "objective",
+    report_source: str = "web",
+) -> Dict[str, Any]:
     """
-    Conduct a web deep research on a given query using GPT Researcher. 
+    Conduct web research on a given query using GPT Researcher, in any of its modes.
     Use this tool when you need time-sensitive, real-time information like stock prices, news, people, specific knowledge, etc.
-    
+
     Args:
-        query: The research query or topic
-        
+        query: The research query or topic. Put scope, time window and exclusions in here.
+        report_type: research_report (default, ~1-3 min), detailed_report (longer, subtopics),
+            deep (recursive multi-level deep research, slowest and most expensive),
+            outline_report, resource_report, subtopic_report, custom_report.
+        tone: objective (default), formal, analytical, informative, persuasive, explanatory,
+            descriptive, critical, comparative, speculative, reflective, narrative, humorous,
+            optimistic, pessimistic.
+        report_source: web (default), local, hybrid.
+
     Returns:
         Dict containing research status, ID, and the actual research context and sources
         that can be used directly by LLMs for context enrichment
@@ -108,9 +160,16 @@ async def deep_research(query: str) -> Dict[str, Any]:
     # Generate a unique ID for this research session
     research_id = str(uuid.uuid4())
     
-    # Initialize GPT Researcher
-    researcher = GPTResearcher(query)
-    
+    # Initialize GPT Researcher with validated mode arguments. Everything GPTResearcher
+    # supports (report_type incl. "deep", tone, report_source) is reachable from the tool.
+    mode = _resolve_research_mode(report_type, tone, report_source)
+    researcher = GPTResearcher(
+        query=query,
+        report_type=mode["report_type"],
+        report_source=mode["report_source"],
+        tone=mode["tone"],
+    )
+
     # Start research
     try:
         await researcher.conduct_research()
@@ -128,6 +187,7 @@ async def deep_research(query: str) -> Dict[str, Any]:
         return create_success_response({
             "research_id": research_id,
             "query": query,
+            "mode": mode["echo"],
             "source_count": len(sources),
             "context": context,
             "sources": format_sources_for_response(sources),
@@ -285,7 +345,7 @@ def run_server():
     transport = os.getenv("MCP_TRANSPORT", "stdio").lower()
     
     # Auto-detect Docker environment
-    if os.path.exists("/.dockerenv") or os.getenv("DOCKER_CONTAINER"):
+    if os.getenv("MCP_TRANSPORT") is None and (os.path.exists("/.dockerenv") or os.getenv("DOCKER_CONTAINER")):
         transport = "sse"
         logger.info("Docker environment detected, using SSE transport")
     
