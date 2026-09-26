@@ -1,9 +1,33 @@
 # GPT Researcher dependencies
-gpt-researcher>=0.14.0
+# Installed from our fork, not PyPI: gpt-researcher accumulated enough
+# separately-tracked bug fixes that maintaining several interacting
+# monkeypatches (with real ordering dependencies between them) became more
+# complex than owning the fixes as native code. See MrSampson/gpt-researcher's
+# spark-production branch and services/research/README.md's "Forked
+# gpt-researcher" section for the full rationale. #1943, #1944, #1951 and
+# #1952 landed upstream (in a re-authored form) and were reconciled into
+# spark-production on 2026-08-24 when it was synced with upstream/main.
+# #1960, #1961 and #1967 were closed by the maintainer on 2026-09-26 --
+# each targeted the retired `master` branch and picked up hundreds of
+# unrelated files from the divergence -- and resubmitted as clean PRs
+# against `main`: #2167, #2166 and #2168 respectively, plus #2169 (the
+# live-websocket fix, which had no PR before this). None of these four
+# have merged upstream yet. spark-production was also synced with
+# upstream/main again on 2026-09-26 (81 more commits).
+# Pin to a specific commit, same as the mcp SDK override below -- rebase
+# and bump periodically, dropping whichever fixes upstream has since
+# merged and released.
+gpt-researcher @ git+https://github.com/MrSampson/gpt-researcher.git@8de7e93020b0875f6c07b77e5d64a93732fbcc7a
 python-dotenv
 
 # MCP dependencies
-fastmcp>=2.8.0
+# Pinned exact, like the gpt-researcher and mcp SDK overrides above: this
+# was previously an unbounded floor (`>=2.8.0`), and fastmcp's 4.0.0
+# release (mcp<3.0.0,>=2.0.0) broke every install pinned to an mcp 1.x
+# SDK the moment it went stable, since fastmcp 3.x only ever required
+# mcp<2.0,>=1.24.0. 3.4.7 is the last 3.x release and the version this
+# fork is actually verified against.
+fastmcp==3.4.7
 fastapi>=0.103.1
 uvicorn>=0.23.2
 pydantic>=2.3.0
