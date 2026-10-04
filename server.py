@@ -194,7 +194,7 @@ async def write_report(research_id: str, custom_prompt: Optional[str] = None) ->
     
     try:
         # Generate report
-        report = await researcher.write_report(custom_prompt=custom_prompt)
+        report = await researcher.write_report(custom_prompt=custom_prompt or "")
         
         # Get additional information
         sources = researcher.get_research_sources()
