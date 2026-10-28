@@ -306,10 +306,8 @@ def run_server():
         else:
             raise ValueError(f"Unsupported transport: {transport}")
             
-        # Note: If we reach here, the server has stopped
-        logger.info("MCP Server is running...")
-        while True:
-            pass  # Keep the process alive
+        # A returned transport has stopped; let run_server() exit cleanly.
+        logger.info("MCP Server stopped")
     except Exception as e:
         logger.error(f"Error running MCP server: {str(e)}")
         print(f"❌ MCP Server error: {str(e)}")
